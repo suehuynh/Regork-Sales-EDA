@@ -1,0 +1,254 @@
+---
+title: "Sue Huynh Report"
+author: "Sue Huynh"
+date: "2022-10-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+The Regork Marketing Team is making a year-round plan to allocate their budget on promotions. They are curious if there are any times of the year, such as holidays, that experienced the spike in sale, in order to plan accordingly and optimize the Return on Ads (ROAs) for the following year.
+
+The project will explore and analyze the sales in 2017 to uncover the differences in sales among *holidays and non-holidays* to decide which time of the year worth extra of marketing budget.
+
+# Part 1: Data preparation
+## 1.1.Load libraries
+
+```{r message=FALSE}
+library(ggplot2)
+library(dplyr)
+library(completejourney)
+library(lubridate)
+library(scales)
+library(zoo)
+library(forcats)
+library("gridExtra")
+```
+
+## 1.2.Load datasets
+```{r}
+campaigns <- campaigns
+campaign_descriptions <- campaign_descriptions
+demographics <- demographics
+transactions <- get_transactions()
+```
+
+## 1.3.Create dataframe
+```{r}
+df <- campaigns %>% 
+     left_join(campaign_descriptions, by = 'campaign_id') %>% 
+     left_join(demographics, by='household_id') %>% 
+     left_join(transactions, by ='household_id')
+```
+
+## 1.4. Data Transformation
+We will add 'IsHoliday' feature for the data frame for the transactions happened on Super Bowl, Labor Day, Thanksgiving, and Christmas.
+```{r}
+df <- df %>% mutate(IsHoliday = case_when(lubridate::date(transaction_timestamp) == '2017-02-05' |
+                                          lubridate::date(transaction_timestamp) == '2017-09-04' |
+                                          lubridate::date(transaction_timestamp) == '2017-11-23' |
+                                          lubridate::date(transaction_timestamp) == '2017-12-24' ~ 1, 
+                                          TRUE ~ 0))
+```
+
+# Part 2: Data Exploration
+```{r}
+summary(df)
+```
+
+From the summary table, we are seeing that our metric (sales_value) has the mean of $3.146$ and Q3 of $3.49$, while its max is $840$. Hence, there must be outliers in the data. To decide whether we should remove the outliers, let's do examinations on it.
+
+## Outlier Detection
+```{r}
+plot_1 <- ggplot(data=df, aes(y=sales_value)) +
+     geom_boxplot() +
+     labs(title = "Sales Distribution in 2017",
+          subtitle = "Household transaction data covering 2017",
+          y = "Total Sales ($)") +
+     scale_y_continuous(labels=comma) +
+     theme(plot.title = element_text(face = "bold"),
+           plot.subtitle = element_text(face = "italic"),
+           panel.background = element_rect(fill = "white"),
+           panel.grid.major = element_line(color = "lightgray"),
+           axis.title.x=element_blank(),
+           axis.text.x=element_blank(),
+           axis.ticks.x=element_blank())
+
+print(plot_1)
+
+```
+
+According to the box plot, We are seeing that out of 7M+ product purchases, there were only a few outliers having sales value higher than $300. 
+To determine whether we should remove the outliers, we will see if these outliers happened during holidays or not.
+
+```{r}
+df[df$sales_value > 300,] %>% 
+     group_by(IsHoliday) %>% 
+     summarize(n_days = n())
+```
+
+The outliers did not occur on any holidays (IsHoliday = 1) identified, we will go ahead and remove these outliers from the data frame.
+
+```{r}
+df <- df %>% 
+     filter(sales_value <= 300)
+```
+
+## 2.1. Sales on holidays vs. non-holidays
+To compare the differences in sales among holidays and non-holidays, we will use the sales of the day as the metric. In other words, we will compare the sales on each holiday and average daily sales for non-holidays.
+```{r}
+df_holiday <- df %>% 
+               filter(IsHoliday == 1) %>% 
+               group_by(lubridate::date(transaction_timestamp)) %>% 
+               summarize(sales = sum(sales_value))
+colnames(df_holiday)[1] <- "date"
+
+avg_daily_sales<- df %>% 
+                    filter(IsHoliday == 0) %>% 
+                    group_by(lubridate::date(transaction_timestamp)) %>% 
+                    summarize(daily_sales = sum(sales_value)) %>% 
+                    summarise_if(is.numeric, mean)
+
+new_row <- c('2017-01-01',avg_daily_sales)
+new_row <- as.data.frame(new_row)
+colnames(new_row) <- c("date","sales")
+new_row <- transform(new_row, date = as.Date(date))
+#create a data frame of day sales
+df_holiday <- bind_rows(df_holiday,new_row) %>% 
+     mutate('typeofdays' = case_when(date == '2017-02-05' ~ 'Super Bowl',
+                                       date == '2017-09-04' ~ 'Labor Day',
+                                       date == '2017-11-23' ~ 'Thanksgiving',
+                                       date == '2017-12-24' ~ 'Christmas',
+                                       date == '2017-01-01' ~ 'Average Day'))
+```
+
+```{r}
+plot_2 <- ggplot(data=df_holiday, aes(x=reorder(typeofdays,-sales),
+                                      y=sales,
+               fill=factor(ifelse(typeofdays=="Average Day","Highlighted","Normal")))) +
+                      geom_bar(stat="identity",show.legend = FALSE) +
+     scale_fill_manual(name = "typeofdays", values=c("#89CFF0","#002D62")) +
+     labs(title = "Sales of the day on holidays and non-holidays",
+          subtitle = "Disclaimer: Daily sales for non-holidays measured by average",
+          x = "Type",
+          y = "Total Sales ($)") +
+     scale_y_continuous(labels=comma) +
+     theme(plot.title = element_text(face = "bold"),
+           plot.subtitle = element_text(face = "italic"),
+           panel.background = element_rect(fill = "white"),
+           panel.grid.major = element_line(color = "lightgray"),
+           axis.title.x=element_blank())
+print(plot_2)
+```
+
+## 2.2. Weekly Sales on holidays vs. non-holidays
+All of other holidays (Super Bowl, Labor Day, Christmas) have higher sales than average of non-holidays. Meanwhile, we are seeing that sales on *Thanksgiving* is significantly lower than other holidays and average day. This phenomenon can be understood as not many stores open on Thanksgiving and our customers have a high chance to stay at home and giving thanks to each other.
+
+Hence, only from the day sales, we could not confirm that *Thanksgiving* is not a profitable holiday. To have a better judgement, we will look at the weekly sales of the holiday and non-holiday *weeks* as customers have habit of buying and preparing a few days before the actual holiday.
+
+```{r}
+df_week <- df %>% 
+     group_by(week) %>% 
+     summarize(weekly_sales = sum(sales_value),
+               weekly_qty = sum(quantity),
+               holiday_week = sum(IsHoliday)) 
+df_week$weektype <- as.factor(ifelse(df_week$week==6, "Super Bowl", 
+                       ifelse(df_week$week==37, "Labor Day",
+                       ifelse(df_week$week==48, "Thanksgiving",
+                       ifelse(df_week$week==52, "Christmas","Non-Holidays"))))) 
+```
+
+```{r, fig.width=10, fig.height=10}
+plot_3 <- df_week %>% 
+     mutate(IsHolidayWeek = case_when(holiday_week==0 ~ 'Non-Holidays',
+                                      holiday_week>0 ~ 'Holidays')) %>% 
+     group_by(IsHolidayWeek) %>% 
+     summarize(avg_sales = mean(weekly_sales)) %>% 
+     ggplot(aes(x=IsHolidayWeek, 
+                y=avg_sales,
+                fill=factor(ifelse(IsHolidayWeek=="Non-Holidays","Highlighted","Normal")))) +
+     geom_bar(stat="identity",show.legend = FALSE) +
+     scale_fill_manual(name = "typeofdays", values=c("#89CFF0","#002D62")) +
+     labs(title = "Average Week Sales on holidays and non-holidays",
+          subtitle = "Disclaimer: Weekly sales for non-holidays measured by average",
+          x = "Type",
+          y = "Total Sales ($)") +
+     scale_y_continuous(labels=comma) +
+     theme(plot.title = element_text(face = "bold"),
+           plot.subtitle = element_text(face = "italic"),
+           panel.background = element_rect(fill = "white"),
+           panel.grid.major = element_line(color = "lightgray"),
+           axis.title.x=element_blank())
+plot_4 <- df_week %>% group_by(weektype) %>% 
+     summarize(avg_sales = mean(weekly_sales)) %>% 
+     ggplot(aes(x=reorder(weektype,-avg_sales), 
+                y=avg_sales,
+                fill=factor(ifelse(weektype=="Non-Holidays","Highlighted","Normal")))) +
+     geom_bar(stat="identity",show.legend = FALSE) +
+     scale_fill_manual(name = "typeofdays", values=c("#89CFF0","#002D62")) +
+     labs(title = "Week Sales on each holiday and non-holidays",
+          subtitle = "Disclaimer: Weekly sales for non-holidays measured by average",
+          x = "Type",
+          y = "Total Sales ($)") +
+     scale_y_continuous(labels=comma) +
+     theme(plot.title = element_text(face = "bold"),
+           plot.subtitle = element_text(face = "italic"),
+           panel.background = element_rect(fill = "white"),
+           panel.grid.major = element_line(color = "lightgray"),
+           axis.title.x=element_blank())
+plot_5 <-  grid.arrange(plot_3,plot_4,nrow=2)
+```
+
+## 2.3. Correlation between number of campaigns and sales
+We recognize that there were some marketing campaigns running all year round, so we are wondering if the campaigns could affect the sales for each holidays.
+
+Let's count number of campaigns running during these holidays.
+```{r}
+cmp <- campaign_descriptions %>% 
+     mutate(SuperBowl = ifelse((start_date <= '2017-02-05') & (end_date >= '2017-02-05'),1,0),
+            LaborDay = ifelse((start_date <= '2017-09-04') & (end_date >= '2017-09-04'),1,0),
+            Thanksgiving = ifelse((start_date <= '2017-11-23') & (end_date >= '2017-11-23'),1,0),
+            Christmas = ifelse((start_date <= '2017-12-24') & (end_date >= '2017-12-24'),1,0)) %>% 
+     summarize_if(is.numeric, sum, na.rm=TRUE)
+df_holiday <- df_holiday %>% 
+          mutate(n_cmp = case_when(typeofdays == 'Super Bowl' ~ 2,
+                                        typeofdays == 'Labor Day' ~ 2,
+                                        typeofdays == 'Thanksgiving' ~ 3,
+                                        typeofdays == 'Christmas' ~ 5))
+```
+```{r}
+plot_6 <- df_holiday %>% 
+     ggplot(aes(x=reorder(typeofdays,-sales))) +
+     geom_bar(aes(y=sales),
+              stat="identity",
+              fill = "#89CFF0") + 
+     geom_point(aes(y=n_cmp*15000), size = 3, color = "#002D62") +
+     scale_y_continuous(labels=comma,
+                        name = 'Total Sales ($)',
+                        sec.axis = sec_axis(~./15000,name = "Number of Campaigns")) +
+     labs(title = "Sales and number of campaigns on each holidays",
+          subtitle = "Sales and campaign data covering 2016-2017",
+          x = "Type") +
+     theme(plot.title = element_text(face = "bold"),
+           plot.subtitle = element_text(face = "italic"),
+           panel.background = element_rect(fill = "white"),
+           panel.grid.major = element_line(color = "lightgray"),
+           axis.title.x=element_blank(),
+           axis.title.y = element_text(vjust = +3))
+     
+plot_6
+
+```
+  
+We are seeing that there are no strong correlation between the number of campaigns running through each holidays and the sales value. Hence,the marketing should improve the efficiency or quality of their campaigns for each holidays and especially focus on the top profitable holidays: Super Bowl, Labor Day, and Christmas.
+
+# Summary
+
+Through the exploration and visualization, we discovered that SALES on holidays and the week of that holidays are higher than other normal weeks. With the insights, the Marketing Team should start planning their budget for campaigns according to the level of profitability of each holiday based on week sales (Christmas > Super Bowl > Labor Day > Thanksgiving)
+
+Besides, the sales are not strongly impacted by the number of marketing campaigns running around that day. The team should not run as many campaigns as possible around the holiday but instead focus on improving the quality of the campaigns for each holidays. The team should remind that quality is better than quantity, regarding the marketing campaigns.
+
+
